@@ -22,7 +22,8 @@ jobs:
       matrix:
         module: ['.']
     container:
-      image: gradle:8.14-jdk21
+      # image: gradle:8.14-jdk21
+      image: gradle:8.14.2-jdk17
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
