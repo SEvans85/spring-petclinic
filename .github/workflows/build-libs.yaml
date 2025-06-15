@@ -1,0 +1,186 @@
+name: Build Java Library
+
+on:
+  workflow_call:
+    inputs:
+      scan_image:
+        type: boolean
+        default: true
+      scan_report:
+        type: boolean
+        default: true
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: ['.']
+    container:
+      image: gradle:8.14-jdk21
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Make Gradlew executable
+        run: chmod +x ./gradlew
+        working-directory: ${{ matrix.module }}
+
+      - name: Build with Gradle
+        working-directory: ${{ matrix.module }}
+        run: gradle build --no-daemon
+        # run: ./gradlew build 
+
+      - name: List JAR files
+        run: ls -l build/libs/*.jar
+        working-directory: ${{ matrix.module }}
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-java-app-jar
+          path: build/libs/*.jar
+
+
+
+  scan:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        module: ['.']
+    steps:
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: my-java-app-jar
+          
+
+      - name: List downloaded files
+        run: ls -l
+
+      - name: Show current working directory
+        run: pwd
+
+      - name: List JAR contents and check for pom.properties
+        run: |
+          echo "Listing all files in gradletest-2.0-javadoc.jar:"
+          jar tf gradletest-2.0-javadoc.jar
+          echo "Looking for pom.properties inside the JAR:"
+          jar tf abcd-landingpage-1.0.0.jar | grep pom.properties || echo "pom.properties not found"
+
+      - name: Debug - List files
+        run: find . -type f
+
+      - name: Scan JAR with Trivy (Java mode)
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: java
+          scan-ref: gradletest-2.0.jar
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'library'
+          severity: 'LOW,CRITICAL,HIGH'
+          output: 'trivy-report.md'
+          
+      # - name: Scan JAR with Trivy
+      #   uses: aquasecurity/trivy-action@0.28.0
+      #   continue-on-error: true
+      #   # env:
+      #     # TRIVY_DISABLE_VEX_NOTICE: true
+      #   with:
+      #     scan-type: fs
+      #     scan-ref: './'
+      #     format: 'table'
+      #     exit-code: '1'
+      #     ignore-unfixed: true
+      #     vuln-type: 'os,library'
+      #     severity: 'LOW,CRITICAL,HIGH'
+      #     output: 'trivy-report.md'
+
+      - name: List downloaded files
+        run: ls -l
+
+      # - name: Run Trivy on build/libs directory
+      #   uses: aquasecurity/trivy-action@0.28.0
+      #   with:
+      #     scan-type: fs
+      #     scan-ref: ./build/libs
+          
+
+
+      - name: Upload Trivy scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-report-${{ github.run_id }}
+          path: trivy-report.md
+
+      - name: Append Trivy report to job summary
+        if: always()
+        run: |
+          echo "## Trivy Scan Report" >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat trivy-report.md >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  semantic-release:
+    runs-on: ubuntu-latest
+    needs: [build, scan]
+    outputs:
+      new_version: ${{ steps.semantic.outputs.new_release_version }}
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      - name: Semantic Release
+        uses: cycjimmy/semantic-release-action@v4
+        id: semantic
+        with:
+          branch: main
+          dry_run: false
+          ci: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-artifacts:
+    # if: ${{ needs.semantic-release.outputs.new_release_published == 'true' }}
+    runs-on: ubuntu-latest
+    needs: [semantic-release, build]
+    strategy:
+      matrix:
+        module: ['.']
+    steps:
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: my-java-app-jar
+
+      - name: List downloaded files
+        run: ls -l
+
+      - name: Rename .jar files with new semantic version
+        run: |
+          for file in *.jar; do
+            new_name=$(echo "$file" | sed -E 's/-[0-9]+(\.[0-9]+)*//')
+            mv "$file" "$new_name"
+            echo "Renamed $file -> $new_name" 
+          done
+
+          
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: root-${{ needs.semantic-release.outputs.new_version }}.jar
+          path: build/libs/*.jar
