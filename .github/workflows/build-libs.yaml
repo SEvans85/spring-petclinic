@@ -1,6 +1,10 @@
 name: Build Java Library
 
 on:
+  push:
+    branches:
+      - main
+  
   workflow_call:
     inputs:
       scan_image:
